@@ -1,0 +1,30 @@
+export const ENV_CONFIG = {
+  // MongoDB Connection
+  MONGODB_URI: 'mongodb+srv://Codethon:Codethon@codethon.egv2dao.mongodb.net/?appName=Codethon',
+
+  // SMTP Configuration
+  SMTP_HOST: 'smtp.gmail.com',
+  SMTP_PORT: '587',
+  SMTP_USER: 'hatakekakashimeme@gmail.com',
+  SMTP_PASSWORD: 'fnpb xzoi gdkg farh',
+  SMTP_FROM_EMAIL: 'hatakekakashimeme@gmail.com',
+
+  // Server Configuration
+  PORT: '5000',
+  NODE_ENV: 'development',
+  SESSION_SECRET: 'your-secret-key-change-in-production',
+
+  // Optional Configuration
+  APP_URL: 'http://localhost:5000',
+  SUPPORT_EMAIL: 'support@terrismart.com',
+  SUREPASS_API_KEY: 'your-surepass-api-key',
+  GOOGLE_CLIENT_ID: '112347591668-js8sd8l64nhhegr8eihbes5fucbot071.apps.googleusercontent.com',
+  GOOGLE_CLIENT_SECRET: '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',
+  GOOGLE_CALLBACK: 'http://localhost:5000/api/auth/google/callback',
+
+  // Google Maps API Key (for map display and geocoding)
+  VITE_GOOGLE_MAPS_API_KEY: 'AIzaSyDeMPbh75UhDk_RAsLs56sEDO1ITKrxmjg',
+
+  // NewsAPI Key
+  NEWS_API_KEY: 'ab6461e2ef91cb263c198ff509b4d1c7'
+};
