@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import multer from "multer";
 import cron from "node-cron";
 import { uploadImageToGridFS, getImageStream, getGridFSBucket } from './gridfs-storage.js';
+import { generatePincodeBoundary, clearBoundaryCache, getCacheStats, isPointInBoundary } from './utils/pincodeBoundaryGenerator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -240,6 +241,107 @@ export async function registerRoutes(app) {
       const lowerMessage = userMessage.toLowerCase();
       let fallbackResponse = '';
       
+      // Check for pincode boundary queries
+      const pincodeMatch = userMessage.match(/\b(\d{6})\b/);
+      const isBoundaryQuery = lowerMessage.includes('boundary') || lowerMessage.includes('show') || 
+                              lowerMessage.includes('map') || lowerMessage.includes('area') ||
+                              lowerMessage.includes('region') || lowerMessage.includes('zone');
+      const isEntityQuery = lowerMessage.includes('properties') || lowerMessage.includes('projects') ||
+                           lowerMessage.includes('list') || lowerMessage.includes('find') ||
+                           lowerMessage.includes('inside') || lowerMessage.includes('within') ||
+                           lowerMessage.includes('schools') || lowerMessage.includes('amenities') ||
+                           lowerMessage.includes('brokers') || lowerMessage.includes('professionals');
+      
+      if (pincodeMatch && (isBoundaryQuery || isEntityQuery)) {
+        const pincode = pincodeMatch[1];
+        console.log(`🗺️ Detected pincode query: ${pincode}, boundary: ${isBoundaryQuery}, entity: ${isEntityQuery}`);
+        
+        try {
+          // Fetch boundary data
+          const boundaryResult = await generatePincodeBoundary(pincode);
+          
+          if (boundaryResult) {
+            let responseText = `**Pincode ${pincode} Information**\n\n`;
+            responseText += `Boundary generated using Google Maps road-network ML approximation.\n\n`;
+            responseText += `**Location Details:**\n`;
+            responseText += `- Center: ${boundaryResult.centroid.lat.toFixed(6)}, ${boundaryResult.centroid.lng.toFixed(6)}\n`;
+            responseText += `- Boundary Points: ${boundaryResult.pointCount}\n`;
+            
+            if (boundaryResult.localities && boundaryResult.localities.length > 0) {
+              responseText += `- Localities: ${boundaryResult.localities.join(', ')}\n`;
+            }
+            
+            // If entity query, fetch entities within the boundary
+            if (isEntityQuery) {
+              const entities = {
+                properties: [],
+                projects: [],
+                professionals: []
+              };
+              
+              try {
+                const allProperties = await Property.find({ status: 'active' }).lean();
+                entities.properties = allProperties.filter(prop => {
+                  if (prop.latitude && prop.longitude) {
+                    return isPointInBoundary({ lat: prop.latitude, lng: prop.longitude }, boundaryResult.polygon);
+                  }
+                  return prop.pincode === pincode;
+                });
+                
+                const allProjects = await Project.find({ status: { $ne: 'deleted' } }).lean();
+                entities.projects = allProjects.filter(proj => {
+                  if (proj.latitude && proj.longitude) {
+                    return isPointInBoundary({ lat: proj.latitude, lng: proj.longitude }, boundaryResult.polygon);
+                  }
+                  return proj.pincode === pincode || (proj.territories && proj.territories.includes(pincode));
+                });
+                
+                const allProfessionals = await RegisteredProfessional.find({ status: 'active' }).lean();
+                entities.professionals = allProfessionals.filter(prof => {
+                  if (prof.latitude && prof.longitude) {
+                    return isPointInBoundary({ lat: prof.latitude, lng: prof.longitude }, boundaryResult.polygon);
+                  }
+                  return prof.pincode === pincode;
+                });
+              } catch (entityError) {
+                console.warn('⚠️ Error fetching entities:', entityError.message);
+              }
+              
+              responseText += `\n**Entities in this area:**\n`;
+              responseText += `- Properties: ${entities.properties.length}\n`;
+              responseText += `- Projects: ${entities.projects.length}\n`;
+              responseText += `- Professionals: ${entities.professionals.length}\n`;
+              
+              if (entities.properties.length > 0) {
+                responseText += `\n**Sample Properties:**\n`;
+                entities.properties.slice(0, 3).forEach((prop, i) => {
+                  responseText += `${i + 1}. ${prop.type} - ${prop.reason === 'sale' ? 'For Sale' : 'For Lease'} - ${prop.areaName || prop.address || 'N/A'}\n`;
+                });
+              }
+              
+              if (entities.projects.length > 0) {
+                responseText += `\n**Sample Projects:**\n`;
+                entities.projects.slice(0, 3).forEach((proj, i) => {
+                  responseText += `${i + 1}. ${proj.projectName} - ${proj.status || 'Active'}\n`;
+                });
+              }
+            }
+            
+            responseText += `\nTo view the boundary on the map, go to the Map section and search for pincode ${pincode}.`;
+            
+            return res.json({
+              message: 'Success',
+              response: responseText,
+              pincode: pincode,
+              boundary: boundaryResult.boundary,
+              centroid: boundaryResult.centroid
+            });
+          }
+        } catch (boundaryError) {
+          console.warn('⚠️ Error processing pincode boundary query:', boundaryError.message);
+        }
+      }
+      
       if (lowerMessage.includes('price') || lowerMessage.includes('cost') || lowerMessage.includes('rate')) {
         fallbackResponse = `Based on current market trends, Ahmedabad's average property prices are around ₹4,820-7,640 per sq. ft., with prices varying by location. The city remains one of India's most affordable major housing markets. Would you like information about prices in a specific area?`;
       } else if (lowerMessage.includes('investment') || lowerMessage.includes('invest')) {
@@ -248,8 +350,10 @@ export async function registerRoutes(app) {
         fallbackResponse = `I can help you with property information in Ahmedabad. The city offers a range of residential and commercial properties. Recent developments include projects in Sanand, Vastrapur, and along Sindhu Bhavan Road. What specific type of property are you looking for?`;
       } else if (lowerMessage.includes('trend') || lowerMessage.includes('market')) {
         fallbackResponse = `Ahmedabad's real estate market is showing steady growth with a 7.9% year-on-year increase in property prices. The market is characterized by strong end-user demand and controlled supply. Sales have increased despite fewer new launches. Would you like more specific market insights?`;
+      } else if (pincodeMatch) {
+        fallbackResponse = `I see you mentioned pincode ${pincodeMatch[1]}. You can:\n\n• Ask "Show me the boundary of ${pincodeMatch[1]}" to view the area\n• Ask "List all properties inside ${pincodeMatch[1]}" to find listings\n• Ask "Find projects within ${pincodeMatch[1]}" for development projects\n\nWhat would you like to know about this area?`;
       } else {
-        fallbackResponse = `I received your message: "${userMessage}". As your AI real estate assistant for Ahmedabad, I can help you with:\n\n• Property prices and market trends\n• Investment opportunities and advice\n• Information about specific areas and localities\n• Real estate regulations and documentation\n• Property recommendations based on your needs\n\nWhat would you like to know more about?`;
+        fallbackResponse = `I received your message: "${userMessage}". As your AI real estate assistant for Ahmedabad, I can help you with:\n\n• Property prices and market trends\n• Investment opportunities and advice\n• Information about specific areas and localities\n• **Pincode boundary mapping** - Ask "Show me the boundary of 380052"\n• **Properties in an area** - Ask "List properties inside 380015"\n• Real estate regulations and documentation\n\nWhat would you like to know more about?`;
       }
       
       return res.json({
@@ -1431,6 +1535,164 @@ export async function registerRoutes(app) {
     } catch (error) {
       console.error('Error fetching pincode boundary:', error);
       res.status(500).json({ message: 'Failed to fetch pincode boundary', error: error.message });
+    }
+  });
+
+  app.get('/api/pincode/:pincode/polygon', async (req, res) => {
+    try {
+      const { pincode } = req.params;
+      
+      if (!pincode || !/^\d{6}$/.test(pincode)) {
+        return res.status(400).json({ 
+          message: 'Valid 6-digit pincode is required',
+          error: 'INVALID_PINCODE'
+        });
+      }
+
+      console.log(`[ML-Polygon] Generating ML boundary for pincode: ${pincode}`);
+      
+      const result = await generatePincodeBoundary(pincode);
+      
+      if (!result) {
+        return res.status(404).json({ 
+          message: 'Could not generate boundary for this pincode',
+          error: 'BOUNDARY_GENERATION_FAILED'
+        });
+      }
+
+      console.log(`[ML-Polygon] Successfully generated polygon with ${result.pointCount} points`);
+      
+      res.json({
+        success: true,
+        source: result.source,
+        centroid: result.centroid,
+        viewport: result.viewport,
+        polygon: result.polygon,
+        boundary: result.boundary,
+        placeId: result.placeId,
+        localities: result.localities,
+        pointCount: result.pointCount,
+        generatedAt: result.generatedAt,
+        message: 'Boundary generated using Google Maps road-network ML approximation.'
+      });
+
+    } catch (error) {
+      console.error('[ML-Polygon] Error:', error);
+      res.status(500).json({ 
+        message: 'Failed to generate pincode polygon',
+        error: error.message
+      });
+    }
+  });
+
+  app.get('/api/pincode/:pincode/entities', async (req, res) => {
+    try {
+      const { pincode } = req.params;
+      const { type } = req.query;
+      
+      if (!pincode || !/^\d{6}$/.test(pincode)) {
+        return res.status(400).json({ message: 'Valid 6-digit pincode is required' });
+      }
+
+      console.log(`[Entities] Fetching entities in pincode: ${pincode}, type: ${type || 'all'}`);
+
+      const boundaryResult = await generatePincodeBoundary(pincode);
+      
+      if (!boundaryResult || !boundaryResult.polygon) {
+        return res.status(404).json({ message: 'Could not determine boundary for this pincode' });
+      }
+
+      const entities = {
+        properties: [],
+        projects: [],
+        professionals: [],
+        users: []
+      };
+
+      if (!type || type === 'properties' || type === 'all') {
+        try {
+          const allProperties = await Property.find({ status: 'active' }).lean();
+          entities.properties = allProperties.filter(prop => {
+            if (prop.latitude && prop.longitude) {
+              return isPointInBoundary({ lat: prop.latitude, lng: prop.longitude }, boundaryResult.polygon);
+            }
+            return prop.pincode === pincode;
+          });
+        } catch (e) {
+          console.warn('[Entities] Error fetching properties:', e.message);
+        }
+      }
+
+      if (!type || type === 'projects' || type === 'all') {
+        try {
+          const allProjects = await Project.find({ status: { $ne: 'deleted' } }).lean();
+          entities.projects = allProjects.filter(proj => {
+            if (proj.latitude && proj.longitude) {
+              return isPointInBoundary({ lat: proj.latitude, lng: proj.longitude }, boundaryResult.polygon);
+            }
+            return proj.pincode === pincode || (proj.territories && proj.territories.includes(pincode));
+          });
+        } catch (e) {
+          console.warn('[Entities] Error fetching projects:', e.message);
+        }
+      }
+
+      if (!type || type === 'professionals' || type === 'all') {
+        try {
+          const allProfessionals = await RegisteredProfessional.find({ status: 'active' }).lean();
+          entities.professionals = allProfessionals.filter(prof => {
+            if (prof.latitude && prof.longitude) {
+              return isPointInBoundary({ lat: prof.latitude, lng: prof.longitude }, boundaryResult.polygon);
+            }
+            return prof.pincode === pincode;
+          });
+        } catch (e) {
+          console.warn('[Entities] Error fetching professionals:', e.message);
+        }
+      }
+
+      res.json({
+        success: true,
+        pincode,
+        boundary: boundaryResult.boundary,
+        centroid: boundaryResult.centroid,
+        entities,
+        counts: {
+          properties: entities.properties.length,
+          projects: entities.projects.length,
+          professionals: entities.professionals.length,
+          users: entities.users.length
+        }
+      });
+
+    } catch (error) {
+      console.error('[Entities] Error:', error);
+      res.status(500).json({ message: 'Failed to fetch entities', error: error.message });
+    }
+  });
+
+  app.get('/api/boundary-cache/stats', requireAuth, async (req, res) => {
+    try {
+      const stats = getCacheStats();
+      res.json({
+        success: true,
+        ...stats
+      });
+    } catch (error) {
+      res.status(500).json({ message: 'Failed to get cache stats' });
+    }
+  });
+
+  app.post('/api/boundary-cache/clear', requireAdmin, async (req, res) => {
+    try {
+      const { pincode } = req.body;
+      clearBoundaryCache(pincode || null);
+      res.json({
+        success: true,
+        message: pincode ? `Cache cleared for ${pincode}` : 'All cache cleared'
+      });
+    } catch (error) {
+      res.status(500).json({ message: 'Failed to clear cache' });
     }
   });
 

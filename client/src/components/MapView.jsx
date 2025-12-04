@@ -197,13 +197,37 @@ function MapViewInner({ selectedPincode: externalSelectedPincode, onPincodeSelec
   const [boundarySource, setBoundarySource] = useState(null);
   const [boundaryError, setBoundaryError] = useState(null);
 
-  // Fetch pincode boundary from server API (uses OpenStreetMap Overpass API for real boundaries)
+  // Fetch pincode boundary - try ML-based polygon first, then fallback to OSM
   const fetchPincodeBoundary = useCallback(async (pincode) => {
     setBoundaryError(null);
     setBoundarySource(null);
     
     try {
-      console.log(`🗺️ Fetching real boundary for pincode: ${pincode}`);
+      console.log(`🗺️ Fetching ML-based boundary for pincode: ${pincode}`);
+      
+      // Try ML-based polygon API first (uses Google Maps road-network approximation)
+      try {
+        const mlResponse = await fetch(`/api/pincode/${pincode}/polygon`);
+        if (mlResponse.ok) {
+          const mlData = await mlResponse.json();
+          if (mlData.success && mlData.boundary && mlData.boundary.length > 0) {
+            console.log(`✅ ML Boundary generated: ${mlData.source}, points: ${mlData.boundary.length}`);
+            setBoundarySource(mlData.source);
+            return {
+              boundary: mlData.boundary,
+              center: mlData.centroid,
+              source: mlData.source,
+              localities: mlData.localities,
+              message: mlData.message
+            };
+          }
+        }
+      } catch (mlError) {
+        console.warn('⚠️ ML boundary generation failed, trying fallback:', mlError.message);
+      }
+      
+      // Fallback to OpenStreetMap Overpass API
+      console.log(`🗺️ Falling back to OSM boundary for pincode: ${pincode}`);
       const response = await fetch(`/api/map/pincode-boundary?pincode=${pincode}`);
       
       if (response.ok) {
