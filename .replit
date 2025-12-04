@@ -1,0 +1,22 @@
+modules = ["nodejs-20", "web"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+MONGODB_URI = "mongodb+srv://Codethon:Codethon@codethon.egv2dao.mongodb.net/?appName=Codethon"
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = "587"
+SMTP_USER = "hatakekakashimeme@gmail.com"
+SMTP_FROM_EMAIL = "hatakekakashimeme@gmail.com"
+PORT = "5000"
+NODE_ENV = "development"
+SUPPORT_EMAIL = "support@terrismart.com"
+SUREPASS_API_KEY = "your-surepass-api-key"
+GOOGLE_CLIENT_ID = "112347591668-js8sd8l64nhhegr8eihbes5fucbot071.apps.googleusercontent.com"
+VITE_GOOGLE_MAPS_API_KEY = "AIzaSyDeMPbh75UhDk_RAsLs56sEDO1ITKrxmjg"
+NEWS_API_KEY = "ab6461e2ef91cb263c198ff509b4d1c7"

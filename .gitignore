@@ -20,6 +20,7 @@ Thumbs.db
 *.swo
 
 # Environment variables (template is tracked in env-config.js)
+.env
 .env.local
 .env.*.local
 
