@@ -47,6 +47,8 @@ TerriSmart is a comprehensive full-stack real estate platform built with React, 
 - **Email Notifications**: OTP verification, welcome emails, status updates
 - **Property Management**: List, search, and manage real estate properties
 - **Google Maps Integration**: Location-based features and geocoding
+- **ML-Based Pincode Boundaries**: AI-powered boundary generation using Google Maps road-network approximation
+- **AI Chat Assistant**: Intelligent assistant with pincode boundary queries and entity lookup
 - **Dashboard Analytics**: Role-specific dashboards with analytics
 - **Payment Integration**: PayPal payment processing
 
@@ -95,14 +97,19 @@ npm start       # Runs production build
 None specified yet.
 
 ## Recent Changes
-- **2025-12-04**: Pincode Boundary Mapping Improvements
-  - Removed hardcoded fake polygon coordinates from `client/src/data/ahmedabadPincodes.js` (kept only center points for fallback)
-  - Rewrote `/api/map/pincode-boundary` endpoint in `server/routes.js` to fetch real geographic boundaries
-  - Implemented multi-source boundary fetching: OpenStreetMap Overpass API → Nominatim reverse geocoding → Google Maps Geocoding (as fallback)
-  - Updated `MapView.jsx` frontend to always fetch from API first with error handling
-  - Added UI indicators showing boundary data source ("overpass", "nominatim", "google_viewport") and "approximate" warnings
-  - **Known Limitation**: Indian pincodes are not well-mapped in OpenStreetMap as postal_code boundaries, so the system typically falls back to Google Maps viewport (rectangular approximations)
-  - **Future Enhancement**: Download and import the official 86 MB GeoJSON dataset from data.gov.in (Ministry of Communications, Department of Posts) for accurate postal boundaries
+- **2025-12-04**: ML-Based Pincode Boundary Generation System
+  - Created `server/utils/pincodeBoundaryGenerator.js` - ML boundary generator with radial sampling, road snapping, and Chaikin smoothing
+  - Added new API endpoints:
+    - `GET /api/pincode/:pincode/polygon` - Returns ML-generated polygon boundaries using Google Maps road-network approximation
+    - `GET /api/pincode/:pincode/entities` - Finds properties, projects, professionals within pincode boundaries
+    - `GET /api/boundary-cache/stats` - Cache statistics (authenticated)
+    - `POST /api/boundary-cache/clear` - Clear boundary cache (admin only)
+  - Updated `MapView.jsx` to prefer ML boundaries over OpenStreetMap fallbacks
+  - Enhanced AI chat assistant with pincode boundary query detection and entity lookups
+  - Technical details: 180-point radial sampling, Google Roads API snapping, Turf.js geospatial operations, memory caching
+- **2025-12-04**: Pincode Boundary Mapping Improvements (earlier)
+  - Multi-source boundary fetching: OpenStreetMap Overpass API → Nominatim → Google Maps viewport
+  - Added UI indicators for boundary data source and approximate warnings
 - **2025-12-04**: Successfully set up project in Replit environment
   - Installed all npm dependencies (542 packages)
   - Configured environment variables using Replit's env system
