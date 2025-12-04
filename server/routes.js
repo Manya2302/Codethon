@@ -256,90 +256,116 @@ export async function registerRoutes(app) {
         const pincode = pincodeMatch[1];
         console.log(`🗺️ Detected pincode query: ${pincode}, boundary: ${isBoundaryQuery}, entity: ${isEntityQuery}`);
         
+        let boundaryResult = null;
+        let hasValidPolygon = false;
+        
         try {
-          // Fetch boundary data
-          const boundaryResult = await generatePincodeBoundary(pincode);
+          boundaryResult = await generatePincodeBoundary(pincode);
+          hasValidPolygon = boundaryResult && boundaryResult.polygon;
+        } catch (boundaryError) {
+          console.warn('⚠️ ML boundary generation failed:', boundaryError.message);
+        }
+        
+        let responseText = `**Pincode ${pincode} Information**\n\n`;
+        
+        if (boundaryResult && boundaryResult.centroid) {
+          responseText += `Boundary generated using Google Maps road-network ML approximation.\n\n`;
+          responseText += `**Location Details:**\n`;
+          responseText += `- Center: ${boundaryResult.centroid.lat.toFixed(6)}, ${boundaryResult.centroid.lng.toFixed(6)}\n`;
+          responseText += `- Boundary Points: ${boundaryResult.pointCount || 'N/A'}\n`;
           
-          if (boundaryResult) {
-            let responseText = `**Pincode ${pincode} Information**\n\n`;
-            responseText += `Boundary generated using Google Maps road-network ML approximation.\n\n`;
-            responseText += `**Location Details:**\n`;
-            responseText += `- Center: ${boundaryResult.centroid.lat.toFixed(6)}, ${boundaryResult.centroid.lng.toFixed(6)}\n`;
-            responseText += `- Boundary Points: ${boundaryResult.pointCount}\n`;
-            
-            if (boundaryResult.localities && boundaryResult.localities.length > 0) {
-              responseText += `- Localities: ${boundaryResult.localities.join(', ')}\n`;
+          if (boundaryResult.localities && boundaryResult.localities.length > 0) {
+            responseText += `- Localities: ${boundaryResult.localities.join(', ')}\n`;
+          }
+        } else {
+          responseText += `Boundary data is being processed. You can still view entities by pincode match.\n\n`;
+        }
+        
+        // If entity query, fetch entities within the boundary or by pincode match
+        if (isEntityQuery) {
+          const entities = {
+            properties: [],
+            projects: [],
+            professionals: []
+          };
+          
+          const safeCheckBoundary = (lat, lng) => {
+            if (!hasValidPolygon) return false;
+            lat = parseFloat(lat);
+            lng = parseFloat(lng);
+            if (isNaN(lat) || isNaN(lng)) return false;
+            try {
+              return isPointInBoundary({ lat, lng }, boundaryResult.polygon);
+            } catch (e) {
+              return false;
             }
-            
-            // If entity query, fetch entities within the boundary
-            if (isEntityQuery) {
-              const entities = {
-                properties: [],
-                projects: [],
-                professionals: []
-              };
-              
-              try {
-                const allProperties = await Property.find({ status: 'active' }).lean();
-                entities.properties = allProperties.filter(prop => {
-                  if (prop.latitude && prop.longitude) {
-                    return isPointInBoundary({ lat: prop.latitude, lng: prop.longitude }, boundaryResult.polygon);
-                  }
-                  return prop.pincode === pincode;
-                });
-                
-                const allProjects = await Project.find({ status: { $ne: 'deleted' } }).lean();
-                entities.projects = allProjects.filter(proj => {
-                  if (proj.latitude && proj.longitude) {
-                    return isPointInBoundary({ lat: proj.latitude, lng: proj.longitude }, boundaryResult.polygon);
-                  }
-                  return proj.pincode === pincode || (proj.territories && proj.territories.includes(pincode));
-                });
-                
-                const allProfessionals = await RegisteredProfessional.find({ status: 'active' }).lean();
-                entities.professionals = allProfessionals.filter(prof => {
-                  if (prof.latitude && prof.longitude) {
-                    return isPointInBoundary({ lat: prof.latitude, lng: prof.longitude }, boundaryResult.polygon);
-                  }
-                  return prof.pincode === pincode;
-                });
-              } catch (entityError) {
-                console.warn('⚠️ Error fetching entities:', entityError.message);
+          };
+          
+          try {
+            const allProperties = await Property.find({ status: 'active' }).lean();
+            entities.properties = allProperties.filter(prop => {
+              if (safeCheckBoundary(prop.latitude, prop.longitude)) {
+                return true;
               }
-              
-              responseText += `\n**Entities in this area:**\n`;
-              responseText += `- Properties: ${entities.properties.length}\n`;
-              responseText += `- Projects: ${entities.projects.length}\n`;
-              responseText += `- Professionals: ${entities.professionals.length}\n`;
-              
-              if (entities.properties.length > 0) {
-                responseText += `\n**Sample Properties:**\n`;
-                entities.properties.slice(0, 3).forEach((prop, i) => {
-                  responseText += `${i + 1}. ${prop.type} - ${prop.reason === 'sale' ? 'For Sale' : 'For Lease'} - ${prop.areaName || prop.address || 'N/A'}\n`;
-                });
+              return prop.pincode === pincode;
+            });
+          } catch (e) {
+            console.warn('⚠️ Error fetching properties:', e.message);
+          }
+          
+          try {
+            const allProjects = await Project.find({ status: { $ne: 'deleted' } }).lean();
+            entities.projects = allProjects.filter(proj => {
+              if (safeCheckBoundary(proj.latitude, proj.longitude)) {
+                return true;
               }
-              
-              if (entities.projects.length > 0) {
-                responseText += `\n**Sample Projects:**\n`;
-                entities.projects.slice(0, 3).forEach((proj, i) => {
-                  responseText += `${i + 1}. ${proj.projectName} - ${proj.status || 'Active'}\n`;
-                });
+              return proj.pincode === pincode || (proj.territories && proj.territories.includes(pincode));
+            });
+          } catch (e) {
+            console.warn('⚠️ Error fetching projects:', e.message);
+          }
+          
+          try {
+            const allProfessionals = await RegisteredProfessional.find({ status: 'active' }).lean();
+            entities.professionals = allProfessionals.filter(prof => {
+              if (safeCheckBoundary(prof.latitude, prof.longitude)) {
+                return true;
               }
-            }
-            
-            responseText += `\nTo view the boundary on the map, go to the Map section and search for pincode ${pincode}.`;
-            
-            return res.json({
-              message: 'Success',
-              response: responseText,
-              pincode: pincode,
-              boundary: boundaryResult.boundary,
-              centroid: boundaryResult.centroid
+              return prof.pincode === pincode;
+            });
+          } catch (e) {
+            console.warn('⚠️ Error fetching professionals:', e.message);
+          }
+          
+          responseText += `\n**Entities in this area:**\n`;
+          responseText += `- Properties: ${entities.properties.length}\n`;
+          responseText += `- Projects: ${entities.projects.length}\n`;
+          responseText += `- Professionals: ${entities.professionals.length}\n`;
+          
+          if (entities.properties.length > 0) {
+            responseText += `\n**Sample Properties:**\n`;
+            entities.properties.slice(0, 3).forEach((prop, i) => {
+              responseText += `${i + 1}. ${prop.type || 'Property'} - ${prop.reason === 'sale' ? 'For Sale' : 'For Lease'} - ${prop.areaName || prop.address || 'N/A'}\n`;
             });
           }
-        } catch (boundaryError) {
-          console.warn('⚠️ Error processing pincode boundary query:', boundaryError.message);
+          
+          if (entities.projects.length > 0) {
+            responseText += `\n**Sample Projects:**\n`;
+            entities.projects.slice(0, 3).forEach((proj, i) => {
+              responseText += `${i + 1}. ${proj.projectName || 'Project'} - ${proj.status || 'Active'}\n`;
+            });
+          }
         }
+        
+        responseText += `\nTo view the boundary on the map, go to the Map section and search for pincode ${pincode}.`;
+        
+        return res.json({
+          message: 'Success',
+          response: responseText,
+          pincode: pincode,
+          boundary: boundaryResult?.boundary || null,
+          centroid: boundaryResult?.centroid || null
+        });
       }
       
       if (lowerMessage.includes('price') || lowerMessage.includes('cost') || lowerMessage.includes('rate')) {
@@ -1544,19 +1570,43 @@ export async function registerRoutes(app) {
       
       if (!pincode || !/^\d{6}$/.test(pincode)) {
         return res.status(400).json({ 
+          success: false,
           message: 'Valid 6-digit pincode is required',
           error: 'INVALID_PINCODE'
         });
       }
 
+      if (!getGoogleMapsApiKey()) {
+        console.warn('[ML-Polygon] No Google Maps API key configured');
+        return res.status(503).json({ 
+          success: false,
+          message: 'ML boundary generation unavailable - Google Maps API key not configured',
+          error: 'API_KEY_MISSING',
+          fallback: true
+        });
+      }
+
       console.log(`[ML-Polygon] Generating ML boundary for pincode: ${pincode}`);
       
-      const result = await generatePincodeBoundary(pincode);
+      let result;
+      try {
+        result = await generatePincodeBoundary(pincode);
+      } catch (genError) {
+        console.warn(`[ML-Polygon] Generation failed for ${pincode}:`, genError.message);
+        return res.status(503).json({ 
+          success: false,
+          message: 'ML boundary generation failed - please use fallback',
+          error: genError.message,
+          fallback: true
+        });
+      }
       
-      if (!result) {
+      if (!result || !result.boundary || result.boundary.length === 0) {
         return res.status(404).json({ 
+          success: false,
           message: 'Could not generate boundary for this pincode',
-          error: 'BOUNDARY_GENERATION_FAILED'
+          error: 'BOUNDARY_GENERATION_FAILED',
+          fallback: true
         });
       }
 
@@ -1570,7 +1620,7 @@ export async function registerRoutes(app) {
         polygon: result.polygon,
         boundary: result.boundary,
         placeId: result.placeId,
-        localities: result.localities,
+        localities: result.localities || [],
         pointCount: result.pointCount,
         generatedAt: result.generatedAt,
         message: 'Boundary generated using Google Maps road-network ML approximation.'
@@ -1579,8 +1629,10 @@ export async function registerRoutes(app) {
     } catch (error) {
       console.error('[ML-Polygon] Error:', error);
       res.status(500).json({ 
+        success: false,
         message: 'Failed to generate pincode polygon',
-        error: error.message
+        error: error.message,
+        fallback: true
       });
     }
   });
@@ -1591,15 +1643,19 @@ export async function registerRoutes(app) {
       const { type } = req.query;
       
       if (!pincode || !/^\d{6}$/.test(pincode)) {
-        return res.status(400).json({ message: 'Valid 6-digit pincode is required' });
+        return res.status(400).json({ success: false, message: 'Valid 6-digit pincode is required' });
       }
 
       console.log(`[Entities] Fetching entities in pincode: ${pincode}, type: ${type || 'all'}`);
 
-      const boundaryResult = await generatePincodeBoundary(pincode);
+      let boundaryResult = null;
+      let hasValidPolygon = false;
       
-      if (!boundaryResult || !boundaryResult.polygon) {
-        return res.status(404).json({ message: 'Could not determine boundary for this pincode' });
+      try {
+        boundaryResult = await generatePincodeBoundary(pincode);
+        hasValidPolygon = boundaryResult && boundaryResult.polygon;
+      } catch (boundaryError) {
+        console.warn(`[Entities] Boundary generation failed for ${pincode}:`, boundaryError.message);
       }
 
       const entities = {
@@ -1609,12 +1665,24 @@ export async function registerRoutes(app) {
         users: []
       };
 
+      const safeCheckBoundary = (lat, lng) => {
+        if (!hasValidPolygon) return false;
+        if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) return false;
+        try {
+          return isPointInBoundary({ lat, lng }, boundaryResult.polygon);
+        } catch (e) {
+          return false;
+        }
+      };
+
       if (!type || type === 'properties' || type === 'all') {
         try {
           const allProperties = await Property.find({ status: 'active' }).lean();
           entities.properties = allProperties.filter(prop => {
-            if (prop.latitude && prop.longitude) {
-              return isPointInBoundary({ lat: prop.latitude, lng: prop.longitude }, boundaryResult.polygon);
+            const lat = parseFloat(prop.latitude);
+            const lng = parseFloat(prop.longitude);
+            if (!isNaN(lat) && !isNaN(lng) && safeCheckBoundary(lat, lng)) {
+              return true;
             }
             return prop.pincode === pincode;
           });
@@ -1627,8 +1695,10 @@ export async function registerRoutes(app) {
         try {
           const allProjects = await Project.find({ status: { $ne: 'deleted' } }).lean();
           entities.projects = allProjects.filter(proj => {
-            if (proj.latitude && proj.longitude) {
-              return isPointInBoundary({ lat: proj.latitude, lng: proj.longitude }, boundaryResult.polygon);
+            const lat = parseFloat(proj.latitude);
+            const lng = parseFloat(proj.longitude);
+            if (!isNaN(lat) && !isNaN(lng) && safeCheckBoundary(lat, lng)) {
+              return true;
             }
             return proj.pincode === pincode || (proj.territories && proj.territories.includes(pincode));
           });
@@ -1641,8 +1711,10 @@ export async function registerRoutes(app) {
         try {
           const allProfessionals = await RegisteredProfessional.find({ status: 'active' }).lean();
           entities.professionals = allProfessionals.filter(prof => {
-            if (prof.latitude && prof.longitude) {
-              return isPointInBoundary({ lat: prof.latitude, lng: prof.longitude }, boundaryResult.polygon);
+            const lat = parseFloat(prof.latitude);
+            const lng = parseFloat(prof.longitude);
+            if (!isNaN(lat) && !isNaN(lng) && safeCheckBoundary(lat, lng)) {
+              return true;
             }
             return prof.pincode === pincode;
           });
@@ -1654,8 +1726,9 @@ export async function registerRoutes(app) {
       res.json({
         success: true,
         pincode,
-        boundary: boundaryResult.boundary,
-        centroid: boundaryResult.centroid,
+        boundary: boundaryResult?.boundary || null,
+        centroid: boundaryResult?.centroid || null,
+        hasBoundary: hasValidPolygon,
         entities,
         counts: {
           properties: entities.properties.length,
@@ -1667,7 +1740,7 @@ export async function registerRoutes(app) {
 
     } catch (error) {
       console.error('[Entities] Error:', error);
-      res.status(500).json({ message: 'Failed to fetch entities', error: error.message });
+      res.status(500).json({ success: false, message: 'Failed to fetch entities', error: error.message });
     }
   });
 
