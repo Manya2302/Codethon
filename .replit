@@ -20,3 +20,40 @@ SUREPASS_API_KEY = "your-surepass-api-key"
 GOOGLE_CLIENT_ID = "112347591668-js8sd8l64nhhegr8eihbes5fucbot071.apps.googleusercontent.com"
 VITE_GOOGLE_MAPS_API_KEY = "AIzaSyDeMPbh75UhDk_RAsLs56sEDO1ITKrxmjg"
 NEWS_API_KEY = "ab6461e2ef91cb263c198ff509b4d1c7"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run dev"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 39521
+externalPort = 3000
+
+[deployment]
+deploymentTarget = "autoscale"
+build = ["npm", "run", "build"]
+run = ["npm", "start"]
