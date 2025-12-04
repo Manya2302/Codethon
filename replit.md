@@ -95,6 +95,14 @@ npm start       # Runs production build
 None specified yet.
 
 ## Recent Changes
+- **2025-12-04**: Pincode Boundary Mapping Improvements
+  - Removed hardcoded fake polygon coordinates from `client/src/data/ahmedabadPincodes.js` (kept only center points for fallback)
+  - Rewrote `/api/map/pincode-boundary` endpoint in `server/routes.js` to fetch real geographic boundaries
+  - Implemented multi-source boundary fetching: OpenStreetMap Overpass API → Nominatim reverse geocoding → Google Maps Geocoding (as fallback)
+  - Updated `MapView.jsx` frontend to always fetch from API first with error handling
+  - Added UI indicators showing boundary data source ("overpass", "nominatim", "google_viewport") and "approximate" warnings
+  - **Known Limitation**: Indian pincodes are not well-mapped in OpenStreetMap as postal_code boundaries, so the system typically falls back to Google Maps viewport (rectangular approximations)
+  - **Future Enhancement**: Download and import the official 86 MB GeoJSON dataset from data.gov.in (Ministry of Communications, Department of Posts) for accurate postal boundaries
 - **2025-12-04**: Successfully set up project in Replit environment
   - Installed all npm dependencies (542 packages)
   - Configured environment variables using Replit's env system

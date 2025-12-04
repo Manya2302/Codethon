@@ -193,28 +193,42 @@ function MapViewInner({ selectedPincode: externalSelectedPincode, onPincodeSelec
   });
 
 
-  // Fetch pincode boundary from server API (prioritizes stored wavy coordinates)
+  // State to track boundary source and status
+  const [boundarySource, setBoundarySource] = useState(null);
+  const [boundaryError, setBoundaryError] = useState(null);
+
+  // Fetch pincode boundary from server API (uses OpenStreetMap Overpass API for real boundaries)
   const fetchPincodeBoundary = useCallback(async (pincode) => {
-    // Always check stored coordinates first (they have wavy, curved boundaries)
-    const pincodeData = ahmedabadPincodes.find((p) => p.pincode === pincode);
-    if (pincodeData && pincodeData.coordinates) {
-      // Use stored wavy coordinates directly
-      return pincodeData.coordinates.map(coord => ({
-        lat: coord[0],
-        lng: coord[1]
-      }));
-    }
+    setBoundaryError(null);
+    setBoundarySource(null);
     
-    // If not in stored list, try server API (which will use Google Maps as fallback)
     try {
+      console.log(`🗺️ Fetching real boundary for pincode: ${pincode}`);
       const response = await fetch(`/api/map/pincode-boundary?pincode=${pincode}`);
+      
       if (response.ok) {
         const data = await response.json();
-        return data.boundary;
+        console.log(`✅ Boundary fetched from: ${data.source}, points: ${data.boundary?.length || 0}`);
+        setBoundarySource(data.source);
+        
+        if (data.approximate) {
+          setBoundaryError('Showing approximate boundary (exact data not available)');
+        }
+        
+        return {
+          boundary: data.boundary,
+          center: data.center,
+          source: data.source
+        };
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.warn('⚠️ Boundary not found:', errorData.message);
+        setBoundaryError(errorData.message || 'Boundary not available');
+        return null;
       }
-      return null;
     } catch (error) {
       console.error('Error fetching pincode boundary:', error);
+      setBoundaryError('Failed to fetch boundary data');
       return null;
     }
   }, []);
@@ -374,87 +388,62 @@ function MapViewInner({ selectedPincode: externalSelectedPincode, onPincodeSelec
   const handleSearch = async () => {
     if (searchPincode.trim()) {
       const pincode = searchPincode.trim();
-      const pincodeData = ahmedabadPincodes.find((p) => p.pincode === pincode);
+      setLoading(true);
       
-      if (pincodeData) {
-        // Set the selected pincode
-        if (onPincodeSelect) {
-          onPincodeSelect(pincode);
+      try {
+        // Always fetch boundary from API (uses real OpenStreetMap data)
+        const result = await fetchPincodeBoundary(pincode);
+        
+        if (result && result.boundary && result.boundary.length > 0) {
+          // Set the selected pincode
+          if (onPincodeSelect) {
+            onPincodeSelect(pincode);
+          } else {
+            setInternalSelectedPincode(pincode);
+          }
+          
+          // Use center from API response or calculate from boundary
+          if (result.center) {
+            setMapCenter({
+              lat: result.center.lat,
+              lng: result.center.lng
+            });
+          } else {
+            // Calculate center from boundary
+            const lats = result.boundary.map(b => b.lat);
+            const lngs = result.boundary.map(b => b.lng);
+            setMapCenter({
+              lat: (Math.max(...lats) + Math.min(...lats)) / 2,
+              lng: (Math.max(...lngs) + Math.min(...lngs)) / 2
+            });
+          }
+          
+          setMapZoom(14);
+          setPincodeBoundary(result.boundary);
         } else {
-          setInternalSelectedPincode(pincode);
-        }
-        
-        // Update map center
-        setMapCenter({
-          lat: pincodeData.center[0],
-          lng: pincodeData.center[1]
-        });
-        setMapZoom(14);
-        
-        // Fetch boundary from server API
-        try {
-          const boundary = await fetchPincodeBoundary(pincode);
-          if (boundary) {
-            setPincodeBoundary(boundary);
-          } else {
-            // Fallback to stored coordinates
-            const coords = pincodeData.coordinates.map(coord => ({
-              lat: coord[0],
-              lng: coord[1]
-            }));
-            setPincodeBoundary(coords);
-          }
-        } catch (error) {
-          console.error('Error fetching boundary:', error);
-          // Fallback to stored coordinates
-          const coords = pincodeData.coordinates.map(coord => ({
-            lat: coord[0],
-            lng: coord[1]
-          }));
-          setPincodeBoundary(coords);
-        }
-
-      } else {
-        // Pincode not in stored list - try to fetch from Google Maps
-        try {
-          const response = await fetch(`/api/map/pincode-boundary?pincode=${pincode}`);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.boundary && data.boundary.length > 0) {
-              // Found via Google Maps
-              if (onPincodeSelect) {
-                onPincodeSelect(pincode);
-              } else {
-                setInternalSelectedPincode(pincode);
-              }
-              
-              // Use center from Google Maps or approximate center from boundary
-              if (data.center) {
-                setMapCenter({
-                  lat: data.center.lat,
-                  lng: data.center.lng
-                });
-              } else {
-                // Calculate center from boundary
-                const lats = data.boundary.map(b => b.lat);
-                const lngs = data.boundary.map(b => b.lng);
-                setMapCenter({
-                  lat: (Math.max(...lats) + Math.min(...lats)) / 2,
-                  lng: (Math.max(...lngs) + Math.min(...lngs)) / 2
-                });
-              }
-              setMapZoom(14);
-              setPincodeBoundary(data.boundary);
+          // Check if we have a center point in local data for fallback positioning
+          const pincodeData = ahmedabadPincodes.find((p) => p.pincode === pincode);
+          if (pincodeData && pincodeData.center) {
+            if (onPincodeSelect) {
+              onPincodeSelect(pincode);
             } else {
-              alert('Pincode not found. Please enter a valid Ahmedabad pincode.');
+              setInternalSelectedPincode(pincode);
             }
+            setMapCenter({
+              lat: pincodeData.center[0],
+              lng: pincodeData.center[1]
+            });
+            setMapZoom(14);
+            setPincodeBoundary(null);
           } else {
-            alert('Pincode not found. Please enter a valid Ahmedabad pincode.');
+            alert('Boundary not available for this pincode. Try a different one.');
           }
-        } catch (error) {
-          console.error('Error searching pincode:', error);
-          alert('Pincode not found. Please enter a valid Ahmedabad pincode.');
         }
+      } catch (error) {
+        console.error('Error searching pincode:', error);
+        alert('Failed to fetch pincode boundary. Please try again.');
+      } finally {
+        setLoading(false);
       }
     }
   };
@@ -473,37 +462,47 @@ function MapViewInner({ selectedPincode: externalSelectedPincode, onPincodeSelec
   // Handle pincode selection and zoom
   useEffect(() => {
     if (selectedPincode) {
-      const pincodeData = ahmedabadPincodes.find((p) => p.pincode === selectedPincode);
-      if (pincodeData) {
-        setMapCenter({
-          lat: pincodeData.center[0],
-          lng: pincodeData.center[1]
-        });
-        setMapZoom(14);
-        setSearchPincode(selectedPincode);
-        
-        // Fetch boundary from server API
-        fetchPincodeBoundary(selectedPincode).then(boundary => {
-          if (boundary) {
-            setPincodeBoundary(boundary);
-          } else {
-            const coords = pincodeData.coordinates.map(coord => ({
-              lat: coord[0],
-              lng: coord[1]
-            }));
-            setPincodeBoundary(coords);
+      setSearchPincode(selectedPincode);
+      
+      // Fetch boundary from server API (uses real OpenStreetMap data)
+      fetchPincodeBoundary(selectedPincode).then(result => {
+        if (result && result.boundary && result.boundary.length > 0) {
+          setPincodeBoundary(result.boundary);
+          
+          // Use center from API response
+          if (result.center) {
+            setMapCenter({
+              lat: result.center.lat,
+              lng: result.center.lng
+            });
           }
-        }).catch(() => {
-          const coords = pincodeData.coordinates.map(coord => ({
-            lat: coord[0],
-            lng: coord[1]
-          }));
-          setPincodeBoundary(coords);
-        });
+        } else {
+          // Fallback to local center data for positioning
+          const pincodeData = ahmedabadPincodes.find((p) => p.pincode === selectedPincode);
+          if (pincodeData && pincodeData.center) {
+            setMapCenter({
+              lat: pincodeData.center[0],
+              lng: pincodeData.center[1]
+            });
+          }
+          setPincodeBoundary(null);
+        }
+      }).catch(() => {
+        // Fallback to local center data for positioning
+        const pincodeData = ahmedabadPincodes.find((p) => p.pincode === selectedPincode);
+        if (pincodeData && pincodeData.center) {
+          setMapCenter({
+            lat: pincodeData.center[0],
+            lng: pincodeData.center[1]
+          });
+        }
+        setPincodeBoundary(null);
+      });
 
-        // Automatically fetch population when pincode is selected (for color coding)
-        fetchPopulation(selectedPincode);
-      }
+      setMapZoom(14);
+      
+      // Automatically fetch population when pincode is selected (for color coding)
+      fetchPopulation(selectedPincode);
     } else {
       if (externalSelectedPincode === null || externalSelectedPincode === undefined) {
         setMapCenter(defaultCenter);
@@ -511,6 +510,8 @@ function MapViewInner({ selectedPincode: externalSelectedPincode, onPincodeSelec
         setSearchPincode("");
         setPincodeBoundary(null);
         setPincodePopulation(null);
+        setBoundarySource(null);
+        setBoundaryError(null);
       }
     }
   }, [selectedPincode, externalSelectedPincode, fetchPincodeBoundary, fetchPopulation]);
@@ -607,11 +608,26 @@ function MapViewInner({ selectedPincode: externalSelectedPincode, onPincodeSelec
               </>
             )}
           </div>
-          {selectedPincode && pincodePopulation && (
-            <div className="p-3 bg-muted rounded-md">
+          {selectedPincode && (
+            <div className="p-3 bg-muted rounded-md space-y-1">
               <p className="text-sm font-medium">
-                <strong>Pincode:</strong> {selectedPincode} | <strong>Population:</strong> {pincodePopulation.toLocaleString()} people
+                <strong>Pincode:</strong> {selectedPincode}
+                {pincodePopulation && (
+                  <> | <strong>Population:</strong> {pincodePopulation.toLocaleString()} people</>
+                )}
               </p>
+              {boundarySource && (
+                <p className="text-xs text-muted-foreground">
+                  Boundary source: {boundarySource === 'openstreetmap' ? 'OpenStreetMap (Real Data)' : 
+                                   boundarySource === 'nominatim' ? 'Nominatim (Real Data)' : 
+                                   boundarySource === 'google_viewport' ? 'Google Maps (Approximate)' : boundarySource}
+                </p>
+              )}
+              {boundaryError && (
+                <p className="text-xs text-amber-600">
+                  {boundaryError}
+                </p>
+              )}
             </div>
           )}
         </div>

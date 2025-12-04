@@ -1316,7 +1316,7 @@ export async function registerRoutes(app) {
     }
   });
 
-  // Get pincode boundary from Google Maps Geocoding API
+  // Get pincode boundary from OpenStreetMap Overpass API (real administrative boundaries)
   app.get('/api/map/pincode-boundary', async (req, res) => {
     try {
       const { pincode } = req.query;
@@ -1325,97 +1325,246 @@ export async function registerRoutes(app) {
         return res.status(400).json({ message: 'Pincode is required' });
       }
 
-      // Import pincode data
-      const { ahmedabadPincodes } = await import('../client/src/data/ahmedabadPincodes.js');
-      
-      // ALWAYS prioritize stored coordinates first (they have wavy, curved boundaries)
-      const pincodeData = ahmedabadPincodes.find((p) => p.pincode === pincode);
-      if (pincodeData && pincodeData.coordinates) {
-        const boundary = pincodeData.coordinates.map(coord => ({
-          lat: coord[0],
-          lng: coord[1]
-        }));
-        return res.json({ 
-          boundary, 
-          source: 'stored',
-          center: pincodeData.center ? { lat: pincodeData.center[0], lng: pincodeData.center[1] } : null
-        });
-      }
+      console.log(`🗺️ Fetching boundary for pincode: ${pincode}`);
 
-      // Only use Google Maps API if pincode not in stored list
-      if (!getGoogleMapsApiKey()) {
-        return res.status(404).json({ message: 'Pincode not found' });
-      }
-
-      // Use Google Maps Geocoding API as fallback
-      const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(pincode + ', Ahmedabad, Gujarat, India')}&key=${getGoogleMapsApiKey()}`;
-      
-      const response = await fetch(geocodeUrl);
-      const data = await response.json();
-
-      if (data.status === 'OK' && data.results && data.results.length > 0) {
-        const result = data.results[0];
-        const geometry = result.geometry;
-        
-        let boundary = null;
-        
-        // Try to get viewport bounds first (most accurate)
-        if (geometry.viewport) {
-          const ne = geometry.viewport.northeast;
-          const sw = geometry.viewport.southwest;
+      // Try OpenStreetMap Overpass API first for real postal boundaries
+      try {
+        const boundary = await fetchOverpassBoundary(pincode);
+        if (boundary && boundary.length > 0) {
+          console.log(`✅ Found real boundary from Overpass API for ${pincode} with ${boundary.length} points`);
           
-          // Create a rectangle boundary (simple fallback for pincodes not in stored list)
-          boundary = [
-            { lat: ne.lat, lng: sw.lng }, // Top-left
-            { lat: ne.lat, lng: ne.lng }, // Top-right
-            { lat: sw.lat, lng: ne.lng }, // Bottom-right
-            { lat: sw.lat, lng: sw.lng }, // Bottom-left
-            { lat: ne.lat, lng: sw.lng }, // Close polygon
-          ];
-        } else if (geometry.bounds) {
-          // Use bounds if viewport not available
-          const ne = geometry.bounds.northeast;
-          const sw = geometry.bounds.southwest;
+          // Calculate center from boundary
+          const lats = boundary.map(b => b.lat);
+          const lngs = boundary.map(b => b.lng);
+          const center = {
+            lat: (Math.max(...lats) + Math.min(...lats)) / 2,
+            lng: (Math.max(...lngs) + Math.min(...lngs)) / 2
+          };
           
-          boundary = [
-            { lat: ne.lat, lng: sw.lng },
-            { lat: ne.lat, lng: ne.lng },
-            { lat: sw.lat, lng: ne.lng },
-            { lat: sw.lat, lng: sw.lng },
-            { lat: ne.lat, lng: sw.lng },
-          ];
-        } else if (geometry.location) {
-          // Fallback: create approximate boundary around location
-          const location = geometry.location;
-          const radius = 0.015; // Approximate radius in degrees (~1.5km)
-          
-          boundary = [
-            { lat: location.lat + radius, lng: location.lng - radius },
-            { lat: location.lat + radius, lng: location.lng + radius },
-            { lat: location.lat - radius, lng: location.lng + radius },
-            { lat: location.lat - radius, lng: location.lng - radius },
-            { lat: location.lat + radius, lng: location.lng - radius },
-          ];
-        }
-
-        if (boundary) {
           return res.json({ 
             boundary, 
-            source: 'google', 
-            center: geometry.location || { lat: 0, lng: 0 }
+            source: 'openstreetmap',
+            center
           });
         }
-      } else {
-        // Log Google Maps API errors for debugging
-        console.error('Google Maps Geocoding API error:', data.status, data.error_message || 'Unknown error');
+      } catch (overpassError) {
+        console.warn('⚠️ Overpass API failed:', overpassError.message);
       }
 
-      return res.status(404).json({ message: 'Pincode not found' });
+      // Try Nominatim API as fallback for boundary
+      try {
+        const boundary = await fetchNominatimBoundary(pincode);
+        if (boundary && boundary.length > 0) {
+          console.log(`✅ Found boundary from Nominatim for ${pincode}`);
+          
+          const lats = boundary.map(b => b.lat);
+          const lngs = boundary.map(b => b.lng);
+          const center = {
+            lat: (Math.max(...lats) + Math.min(...lats)) / 2,
+            lng: (Math.max(...lngs) + Math.min(...lngs)) / 2
+          };
+          
+          return res.json({ 
+            boundary, 
+            source: 'nominatim',
+            center
+          });
+        }
+      } catch (nominatimError) {
+        console.warn('⚠️ Nominatim API failed:', nominatimError.message);
+      }
+
+      // Final fallback: Use Google Maps Geocoding API for viewport/bounds
+      if (getGoogleMapsApiKey()) {
+        try {
+          const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(pincode + ', Gujarat, India')}&key=${getGoogleMapsApiKey()}`;
+          
+          const response = await fetch(geocodeUrl);
+          const data = await response.json();
+
+          if (data.status === 'OK' && data.results && data.results.length > 0) {
+            const result = data.results[0];
+            const geometry = result.geometry;
+            
+            let boundary = null;
+            
+            if (geometry.viewport) {
+              const ne = geometry.viewport.northeast;
+              const sw = geometry.viewport.southwest;
+              
+              boundary = [
+                { lat: ne.lat, lng: sw.lng },
+                { lat: ne.lat, lng: ne.lng },
+                { lat: sw.lat, lng: ne.lng },
+                { lat: sw.lat, lng: sw.lng },
+                { lat: ne.lat, lng: sw.lng },
+              ];
+            } else if (geometry.location) {
+              const location = geometry.location;
+              const radius = 0.015;
+              
+              boundary = [
+                { lat: location.lat + radius, lng: location.lng - radius },
+                { lat: location.lat + radius, lng: location.lng + radius },
+                { lat: location.lat - radius, lng: location.lng + radius },
+                { lat: location.lat - radius, lng: location.lng - radius },
+                { lat: location.lat + radius, lng: location.lng - radius },
+              ];
+            }
+
+            if (boundary) {
+              console.log(`📍 Using Google Maps viewport for ${pincode} (approximate boundary)`);
+              return res.json({ 
+                boundary, 
+                source: 'google_viewport',
+                center: geometry.location || { lat: 0, lng: 0 },
+                approximate: true
+              });
+            }
+          }
+        } catch (googleError) {
+          console.warn('⚠️ Google Maps API failed:', googleError.message);
+        }
+      }
+
+      return res.status(404).json({ message: 'Boundary not available for this pincode' });
     } catch (error) {
       console.error('Error fetching pincode boundary:', error);
       res.status(500).json({ message: 'Failed to fetch pincode boundary', error: error.message });
     }
   });
+
+  // Helper function to fetch boundary from OpenStreetMap Overpass API
+  async function fetchOverpassBoundary(pincode) {
+    const overpassUrl = 'https://overpass-api.de/api/interpreter';
+    
+    // Query for postal code boundary relation in India
+    const query = `
+      [out:json][timeout:25];
+      (
+        relation["boundary"="postal_code"]["postal_code"="${pincode}"];
+        relation["boundary"="administrative"]["postal_code"="${pincode}"];
+        way["boundary"="postal_code"]["postal_code"="${pincode}"];
+        area["postal_code"="${pincode}"]["ISO3166-2"~"IN-GJ"];
+      );
+      out geom;
+    `;
+
+    const response = await fetch(overpassUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: `data=${encodeURIComponent(query)}`
+    });
+
+    if (!response.ok) {
+      throw new Error(`Overpass API returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (data.elements && data.elements.length > 0) {
+      // Find elements with geometry
+      for (const element of data.elements) {
+        if (element.type === 'relation' && element.members) {
+          // Extract coordinates from relation members (outer ways)
+          const boundary = extractBoundaryFromRelation(element);
+          if (boundary && boundary.length > 0) {
+            return boundary;
+          }
+        } else if (element.type === 'way' && element.geometry) {
+          // Direct way geometry
+          return element.geometry.map(point => ({
+            lat: point.lat,
+            lng: point.lon
+          }));
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  // Helper function to extract boundary coordinates from OSM relation
+  function extractBoundaryFromRelation(relation) {
+    const outerWays = [];
+    
+    if (relation.members) {
+      for (const member of relation.members) {
+        if (member.type === 'way' && member.role === 'outer' && member.geometry) {
+          outerWays.push(member.geometry);
+        }
+      }
+    }
+    
+    if (outerWays.length === 0) {
+      return null;
+    }
+    
+    // Merge ways into a single boundary
+    let boundary = [];
+    for (const way of outerWays) {
+      for (const point of way) {
+        boundary.push({
+          lat: point.lat,
+          lng: point.lon
+        });
+      }
+    }
+    
+    return boundary;
+  }
+
+  // Helper function to fetch boundary from Nominatim
+  async function fetchNominatimBoundary(pincode) {
+    const nominatimUrl = `https://nominatim.openstreetmap.org/search?postalcode=${pincode}&country=India&format=json&polygon_geojson=1&limit=1`;
+    
+    const response = await fetch(nominatimUrl, {
+      headers: {
+        'User-Agent': 'TerriSmart/1.0 (Real Estate Platform)'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Nominatim API returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (data && data.length > 0 && data[0].geojson) {
+      const geojson = data[0].geojson;
+      
+      if (geojson.type === 'Polygon' && geojson.coordinates) {
+        // Convert GeoJSON polygon to lat/lng array
+        const coords = geojson.coordinates[0]; // Outer ring
+        return coords.map(coord => ({
+          lat: coord[1],
+          lng: coord[0]
+        }));
+      } else if (geojson.type === 'MultiPolygon' && geojson.coordinates) {
+        // Use the largest polygon
+        let largestPolygon = null;
+        let maxPoints = 0;
+        
+        for (const polygon of geojson.coordinates) {
+          if (polygon[0].length > maxPoints) {
+            maxPoints = polygon[0].length;
+            largestPolygon = polygon[0];
+          }
+        }
+        
+        if (largestPolygon) {
+          return largestPolygon.map(coord => ({
+            lat: coord[1],
+            lng: coord[0]
+          }));
+        }
+      }
+    }
+    
+    return null;
+  }
 
   // Reverse geocoding - get address and pincode from coordinates
   app.get('/api/map/reverse-geocode', async (req, res) => {
